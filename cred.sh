@@ -1,12 +1,9 @@
 #!/bin/bash
 
 GITHUB_TOKEN=""
-DOCKERHUB_USER="sasha22mk"
-DOCKERHUB_PASSWORD=""
 SSH_KEY_PATH="/root/.ssh/id_ed25519"
 GITHUB_EMAIL="sashamankovsky2019@gmail.com"
 CREDENTIAL_ID="ssh-key-jenkins"
-DOCKERHUB_CREDENTIAL_ID="docker-hub-credentials"
 GROOVY_SCRIPT_PATH="/var/lib/jenkins/init.groovy.d/add-credentials.groovy"
 
 if [[ ! -f "$SSH_KEY_PATH" ]]; then
@@ -31,7 +28,7 @@ import com.cloudbees.plugins.credentials.domains.*
 import com.cloudbees.plugins.credentials.impl.*
 import com.cloudbees.jenkins.plugins.sshcredentials.impl.*
 
-println("[INIT] Починаємо додавання SSH та Docker Hub credentials...")
+println("[INIT] Починаємо додавання SSH credentials...")
 
 def instance = Jenkins.instance
 if (instance == null) {
@@ -52,22 +49,12 @@ def sshKey = new BasicSSHUserPrivateKey(
 )
 credentialsStore.addCredentials(Domain.global(), sshKey)
 
-// Додавання Docker Hub credentials
-def dockerHubCreds = new UsernamePasswordCredentialsImpl(
-    CredentialsScope.GLOBAL,
-    "$DOCKERHUB_CREDENTIAL_ID",
-    "Docker Hub Credentials",
-    "$DOCKERHUB_USERNAME",
-    "$DOCKERHUB_PASSWORD"
-)
-credentialsStore.addCredentials(Domain.global(), dockerHubCreds)
-
 instance.save()
 
-println("✅ Global SSH credentials '$CREDENTIAL_ID' та Docker Hub credentials '$DOCKERHUB_CREDENTIAL_ID' додано успішно!")
+println("✅ Global SSH credentials '$CREDENTIAL_ID' додано успішно!")
 EOF
 
-echo "✅ Groovy-скрипт для додавання SSH-ключа та Docker Hub credentials створено: $GROOVY_SCRIPT_PATH"
+echo "✅ Groovy-скрипт для додавання SSH-ключа створено: $GROOVY_SCRIPT_PATH"
 
 sudo -u jenkins mkdir -p /var/lib/jenkins/.ssh
 sudo chmod 700 /var/lib/jenkins/.ssh
@@ -88,8 +75,8 @@ echo " Додаємо публічний ключ до GitHub..."
 
 if ! command -v gh &> /dev/null
 then
-  echo "❌ GitHub CLI (gh) не встановлено. Будь ласка, встановіть його."
-  exit 1
+    echo "❌ GitHub CLI (gh) не встановлено. Будь ласка, встановіть його."
+    exit 1
 fi
 
 echo "Авторизація GitHub CLI..."
@@ -98,3 +85,15 @@ echo "$GITHUB_TOKEN" | gh auth login --with-token
 gh ssh-key add "$SSH_KEY_PATH.pub" -t "Jenkins SSH Key"
 
 echo "✅ Публічний ключ успішно додано до GitHub!"
+
+# Додавання docker login для користувача jenkins
+export DOCKERHUB_USER="your_username"
+export DOCKERHUB_PASSWORD="your_password"
+
+sudo -u jenkins /bin/bash -c "echo '$DOCKERHUB_PASSWORD' | docker login -u '$DOCKERHUB_USER' --password-stdin"
+
+if [ $? -eq 0 ]; then
+    echo "✅ Docker login успішно виконано для користувача jenkins."
+else
+    echo "❌ Помилка Docker login для користувача jenkins."
+fi
