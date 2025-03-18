@@ -4,7 +4,6 @@ JENKINS_URL="http://localhost:8080"
 JENKINS_USER="admin"
 JENKINS_PASSWORD="1"
 CREDENTIAL_ID="ssh-key-jenkins"
-DOCKER_CREDENTIAL_ID="docker-hub-credentials"  # Додано для Docker Hub
 JOB_DIR="jenkins_jobs"
 CLI_JAR="jenkins_files/jenkins-cli.jar"
 
@@ -71,4 +70,4 @@ EOF
     fi
 done
 
-echo "✅ Всі пайплайни створено або оновлено!"
+echo "✅ Всі пайплайни створено!"
