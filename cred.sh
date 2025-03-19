@@ -87,7 +87,7 @@ gh ssh-key add "$SSH_KEY_PATH.pub" -t "Jenkins SSH Key"
 echo "✅ Публічний ключ успішно додано до GitHub!"
 
 # Додавання docker login для користувача jenkins
-export DOCKERHUB_USER="your_username"
+export DOCKERHUB_USER="sasha22mk"
 export DOCKERHUB_PASSWORD="your_password"
 
 sudo -u jenkins /bin/bash -c "echo '$DOCKERHUB_PASSWORD' | docker login -u '$DOCKERHUB_USER' --password-stdin"
