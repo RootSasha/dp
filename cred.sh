@@ -1,27 +1,21 @@
 #!/bin/bash
 
-GITHUB_TOKEN=""
-SSH_KEY_PATH="/root/.ssh/id_ed25519"
-GITHUB_EMAIL="sashamankovsky2019@gmail.com"
-CREDENTIAL_ID="ssh-key-jenkins"
-GROOVY_SCRIPT_PATH="/var/lib/jenkins/init.groovy.d/add-credentials.groovy"
+source config.sh
 
+# Генерація або використання SSH-ключа
 if [[ ! -f "$SSH_KEY_PATH" ]]; then
-    echo " Генеруємо новий SSH-ключ..."
+    echo "Генеруємо новий SSH-ключ..."
     ssh-keygen -t ed25519 -f "$SSH_KEY_PATH" -C "$GITHUB_EMAIL" -N "" -q
     echo "✅ Новий SSH-ключ створено!"
 else
-    echo " SSH-ключ вже існує, використовуємо його."
+    echo "SSH-ключ вже існує, використовуємо його."
 fi
 
+# Додавання SSH-ключа до Jenkins
 SSH_PRIVATE_KEY=$(cat "$SSH_KEY_PATH")
 SSH_PUBLIC_KEY=$(cat "$SSH_KEY_PATH.pub")
 
-PRIVATE_KEY_FILE="/root/jenkins_ssh_key.txt"
-echo "$SSH_PRIVATE_KEY" | sudo tee "$PRIVATE_KEY_FILE" > /dev/null
-sudo chmod 600 "$PRIVATE_KEY_FILE"
-
-cat <<EOF | sudo tee "$GROOVY_SCRIPT_PATH" > /dev/null
+cat <<EOF | tee /var/lib/jenkins/init.groovy.d/add-credentials.groovy > /dev/null
 import jenkins.model.*
 import com.cloudbees.plugins.credentials.*
 import com.cloudbees.plugins.credentials.domains.*
@@ -38,7 +32,7 @@ if (instance == null) {
 
 def credentialsStore = instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0].getStore()
 
-// Додавання SSH-ключа
+# Додавання SSH-ключа
 def sshKey = new BasicSSHUserPrivateKey(
     CredentialsScope.GLOBAL,
     "$CREDENTIAL_ID",
@@ -54,46 +48,16 @@ instance.save()
 println("✅ Global SSH credentials '$CREDENTIAL_ID' додано успішно!")
 EOF
 
-echo "✅ Groovy-скрипт для додавання SSH-ключа створено: $GROOVY_SCRIPT_PATH"
+echo "✅ Groovy-скрипт для додавання SSH-ключа створено!"
 
-sudo -u jenkins mkdir -p /var/lib/jenkins/.ssh
-sudo chmod 700 /var/lib/jenkins/.ssh
-sudo chown -R jenkins:jenkins /var/lib/jenkins/.ssh
+# Налаштування SSH для Jenkins
+mkdir -p /var/lib/jenkins/.ssh
+chmod 700 /var/lib/jenkins/.ssh
+chown -R jenkins:jenkins /var/lib/jenkins/.ssh
 
-echo " Додаємо GitHub до known_hosts..."
+echo "Додаємо GitHub до known_hosts..."
+ssh-keyscan -H github.com | tee /var/lib/jenkins/.ssh/known_hosts > /dev/null
+chmod 600 /var/lib/jenkins/.ssh/known_hosts
+chown jenkins:jenkins /var/lib/jenkins/.ssh/known_hosts
 
-sudo -u jenkins ssh-keyscan -H github.com | sudo tee /var/lib/jenkins/.ssh/known_hosts > /dev/null
-sudo chmod 600 /var/lib/jenkins/.ssh/known_hosts
-sudo chown jenkins:jenkins /var/lib/jenkins/.ssh/known_hosts
-
-echo " Даємо дозволи у файлі visudo..."
-echo "jenkins ALL=(ALL) NOPASSWD: /usr/bin/docker" | sudo tee -a /etc/sudoers
-
-sudo usermod -aG docker jenkins
-
-echo " Додаємо публічний ключ до GitHub..."
-
-if ! command -v gh &> /dev/null
-then
-    echo "❌ GitHub CLI (gh) не встановлено. Будь ласка, встановіть його."
-    exit 1
-fi
-
-echo "Авторизація GitHub CLI..."
-echo "$GITHUB_TOKEN" | gh auth login --with-token
-
-gh ssh-key add "$SSH_KEY_PATH.pub" -t "Jenkins SSH Key"
-
-echo "✅ Публічний ключ успішно додано до GitHub!"
-
-# Додавання docker login для користувача jenkins
-export DOCKERHUB_USER="sasha22mk"
-export DOCKERHUB_PASSWORD=""
-
-sudo -u jenkins /bin/bash -c "echo '$DOCKERHUB_PASSWORD' | docker login -u '$DOCKERHUB_USER' --password-stdin"
-
-if [ $? -eq 0 ]; then
-    echo "✅ Docker login успішно виконано для користувача jenkins."
-else
-    echo "❌ Помилка Docker login для користувача jenkins."
-fi
+echo "✅ SSH налаштовано для Jenkins!"
