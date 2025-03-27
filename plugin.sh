@@ -1,32 +1,17 @@
 #!/bin/bash
 
-JENKINS_URL="http://localhost:8080"
-JENKINS_USER="admin"
-JENKINS_PASSWORD="1"
-CLI_JAR="jenkins_files/jenkins-cli.jar"
+source config.sh
 
 plugins=(
     "cloudbees-folder"
-    "custom-markup-formatter"
     "build-timeout"
     "credentials-binding"
     "timestamper"
     "ws-cleanup"
-    "ant"
     "gradle"
     "workflow-aggregator"
     "github-branch-source"
-    "github-api"
-    "pipeline-github-lib"
-    "pipeline-graph-view"
     "git"
-    "ssh-slaves"
-    "matrix-auth"
-    "pam-auth"
-    "ldap"
-    "email-ext"
-    "mailer"
-    "dark-theme"
     "workflow-job"
     "workflow-cps"
 )
@@ -37,10 +22,8 @@ for plugin in "${plugins[@]}"; do
     if [[ $? -ne 0 ]]; then
         echo "❌ Не вдалося встановити $plugin. Пропускаємо..."
     else
-      echo "✅ Плагін $plugin встановлено"
+        echo "✅ Плагін $plugin встановлено"
     fi
 done
 
-echo " Перезапуск Jenkins..."
-sudo systemctl restart jenkins
-echo "✅ Jenkins перезапущено!"
+echo "✅ Всі плагіни встановлено!"
