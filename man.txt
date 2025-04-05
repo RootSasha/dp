@@ -1,10 +1,41 @@
-1. У файлі install.sh встановлюється, налаштовується та запускається Jenkins.
-   Створюється юзер з логіном admin та паролем 1 та запускається наступний скрипт plugin.sh.
+# === ЗМІННІ ===
+$domainName = "corp.local"
+$netbiosName = "CORP"
+$adminPassword = ConvertTo-SecureString "StrongPassword123!" -AsPlainText -Force
+$staticIP = "192.168.0.114"
+$subnetMask = "255.255.255.0"
+$gateway = "192.168.0.1"
+$dns = "8.8.8.8"
+$dhcpScopeStart = "192.168.1.100"
+$dhcpScopeEnd = "192.168.1.200"
 
-2. У файлі plugin.sh потрібно змінити ip адресу, юзера та пароль.
+# === СТАТИЧНА IP-КОНФІГУРАЦІЯ ===
+$adapter = Get-NetAdapter | Where-Object {$_.Status -eq "Up"}
+New-NetIPAddress -InterfaceIndex $adapter.ifIndex -IPAddress $staticIP -PrefixLength 24 -DefaultGateway $gateway
+Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ServerAddresses $dns
 
-3. Далі запускається файл cred.sh у ньому потрібно змінити лише gmail.
-   Цей файл створює ssh ключі, приватний для jenkins(та додає його до глобальних jenkins кредів),
-   та публіний для github(і показує його у командному рядку)
+# === ВСТАНОВЛЕННЯ РОЛЕЙ ===
+Install-WindowsFeature AD-Domain-Services, DNS, DHCP, WDS -IncludeManagementTools
 
-4. 
+# === СТВОРЕННЯ ДОМЕНУ ===
+Install-ADDSForest -DomainName $domainName -DomainNetbiosName $netbiosName -SafeModeAdministratorPassword $adminPassword -InstallDns -Force
+
+# Після перезавантаження продовж виконання нижче вручну (бо ADDS вимагає reboot)
+
+
+
+
+# === ДОДАТКОВІ НАЛАШТУВАННЯ DHCP ===
+Add-DhcpServerv4Scope -Name "DefaultScope" -StartRange $dhcpScopeStart -EndRange $dhcpScopeEnd -SubnetMask $subnetMask -State Active
+Set-DhcpServerv4OptionValue -ScopeId 0.0.0.0 -Router $gateway -DnsServer $dns -DnsDomain $domainName
+
+# Авторизація DHCP в AD
+Add-DhcpServerInDC -DnsName "$env:COMPUTERNAME.$domainName" -IpAddress $staticIP
+
+# === СТАРТ СЛУЖБ ===
+Start-Service wdsserver
+Start-Service dhcpserver
+Start-Service dns
+
+# === ДОДАТКОВО: ВІДКЛЮЧИТИ FIREWALL (тільки для тесту) ===
+# Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
