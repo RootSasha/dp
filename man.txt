@@ -1,41 +1,224 @@
-# === ЗМІННІ ===
-$domainName = "corp.local"
-$netbiosName = "CORP"
-$adminPassword = ConvertTo-SecureString "StrongPassword123!" -AsPlainText -Force
-$staticIP = "192.168.0.114"
-$subnetMask = "255.255.255.0"
-$gateway = "192.168.0.1"
-$dns = "8.8.8.8"
-$dhcpScopeStart = "192.168.1.100"
-$dhcpScopeEnd = "192.168.1.200"
+#Requires -Version 5.1
+#Requires -RunAsAdministrator
 
-# === СТАТИЧНА IP-КОНФІГУРАЦІЯ ===
-$adapter = Get-NetAdapter | Where-Object {$_.Status -eq "Up"}
-New-NetIPAddress -InterfaceIndex $adapter.ifIndex -IPAddress $staticIP -PrefixLength 24 -DefaultGateway $gateway
-Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ServerAddresses $dns
+<#
+.SYNOPSIS
+    Скрипт для автоматичного встановлення та налаштування ролей DHCP, DNS та WDS на Windows Server.
+.DESCRIPTION
+    Цей скрипт встановлює необхідні ролі, налаштовує DHCP-сервер (включаючи область та опції),
+    створює основну DNS-зону з A-записом для WDS-сервера, ініціалізує WDS,
+    а також додає завантажувальний та інсталяційний образи.
+.NOTES
+    Автор: [Ваше ім'я/Компанія]
+    Версія: 2.0
+    Дата створення: 2024-05-07
+    Остання зміна: 2025-05-09
 
-# === ВСТАНОВЛЕННЯ РОЛЕЙ ===
-Install-WindowsFeature AD-Domain-Services, DNS, DHCP, WDS -IncludeManagementTools
+    Перед запуском:
+    1. Переконайтеся, що сервер має статичну IP-адресу, яка відповідає змінній $ipAddress.
+    2. Запустіть цей скрипт від імені адміністратора.
+    3. Розмістіть інсталяційні файли Windows (з boot.wim та install.wim) у місці, вказаному в $bootImagePath та $installImagePath (наприклад, на диску D:\sources\).
+    4. Змініть значення змінних відповідно до вашого середовища.
+    5. Для $wdsPath рекомендується використовувати окремий несистемний диск.
+#>
 
-# === СТВОРЕННЯ ДОМЕНУ ===
-Install-ADDSForest -DomainName $domainName -DomainNetbiosName $netbiosName -SafeModeAdministratorPassword $adminPassword -InstallDns -Force
+# ==== Змінні ====
+$ipAddress = "192.168.1.10" # Статична IP-адреса цього сервера
+$subnetMask = "255.255.255.0"  # Маска підмережі для статичної IP (інформаційно, скрипт не встановлює IP сервера)
+$gateway = "192.168.1.1"       # Основний шлюз для клієнтів DHCP
+$dnsServerForClients = "192.168.1.10" # DNS-сервер, який буде видаватися клієнтам DHCP (може бути цей сервер або інший)
+$primaryDnsServerForZone = "192.168.1.10" # IP-адреса основного DNS-сервера для нової зони (зазвичай цей сервер)
 
-# Після перезавантаження продовж виконання нижче вручну (бо ADDS вимагає reboot)
+$scopeName = "LAN-Scope-Main"
+$scopeStart = "192.168.1.100"
+$scopeEnd = "192.168.1.200"
+$scopeSubnet = "255.255.255.0" # Маска підмережі для DHCP області
+$scopeLeaseDuration = ([TimeSpan]::FromDays(8))
 
+$domainName = "contoso.local" # DNS-ім'я домену
+$wdsServerDnsName = "wds"      # DNS-ім'я для A-запису WDS-сервера (наприклад, wds.contoso.local)
+$wdsPath = "E:\RemoteInstall"  # Шлях для папки RemoteInstall (РЕКОМЕНДОВАНО несистемний диск)
 
+# Шляхи до образів WDS (переконайтеся, що вони правильні)
+$bootWimPath = "D:\sources\boot.wim"
+$installWimPath = "D:\sources\install.wim"
+$defaultBootImageName = "Windows PE Setup x64"
+$defaultBootImageGroup = "Standard Boot Images"
+$defaultInstallImageGroup = "Standard Install Images"
 
+# ==== Перевірка прав адміністратора ====
+if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Error "Цей скрипт потрібно запустити від імені адміністратора."
+    Exit 1
+}
 
-# === ДОДАТКОВІ НАЛАШТУВАННЯ DHCP ===
-Add-DhcpServerv4Scope -Name "DefaultScope" -StartRange $dhcpScopeStart -EndRange $dhcpScopeEnd -SubnetMask $subnetMask -State Active
-Set-DhcpServerv4OptionValue -ScopeId 0.0.0.0 -Router $gateway -DnsServer $dns -DnsDomain $domainName
+# ==== Перевірка шляху WDS ====
+if ($wdsPath.StartsWith("C:\", [System.StringComparison]::OrdinalIgnoreCase)) {
+    Write-Warning "ПОПЕРЕДЖЕННЯ: Папка RemoteInstall ($wdsPath) знаходиться на системному диску. Рекомендується використовувати окремий розділ."
+}
+if (-not (Test-Path (Split-Path $wdsPath -Parent))) {
+    Write-Error "Батьківський каталог для $wdsPath не існує. Будь ласка, створіть його або виправте шлях."
+    Exit 1
+}
 
-# Авторизація DHCP в AD
-Add-DhcpServerInDC -DnsName "$env:COMPUTERNAME.$domainName" -IpAddress $staticIP
+# ==== Встановлення ролей ====
+Write-Host "Встановлення необхідних ролей (DHCP, DNS, WDS)..."
+$rolesToInstall = @(
+    "DHCP", # Включає DHCP-Server
+    "DNS",
+    "WDS"
+)
+$installedFeatures = Get-WindowsFeature -Name $rolesToInstall | Where-Object {$_.Installed -eq $true}
+$featuresToInstall = Get-WindowsFeature -Name $rolesToInstall | Where-Object {$_.Installed -eq $false}
 
-# === СТАРТ СЛУЖБ ===
-Start-Service wdsserver
-Start-Service dhcpserver
-Start-Service dns
+if ($featuresToInstall) {
+    Install-WindowsFeature -Name $featuresToInstall.Name -IncludeManagementTools -Verbose
+    Write-Host "Ролі встановлено. Може знадобитися перезавантаження."
+    # Тут можна додати перевірку на необхідність перезавантаження та запропонувати його
+} else {
+    Write-Host "Усі необхідні ролі вже встановлено."
+}
 
-# === ДОДАТКОВО: ВІДКЛЮЧИТИ FIREWALL (тільки для тесту) ===
-# Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+# ==== DHCP Конфігурація ====
+Write-Host "Налаштування DHCP-сервера..."
+try {
+    # Визначення ScopeId з початкової адреси діапазону
+    $networkAddress = $scopeStart.Split('.')[0..2] -join '.'
+    $ScopeNetworkID = "$networkAddress.0"
+
+    # Перевірка, чи область вже існує
+    $existingScope = Get-DhcpServerv4Scope -ComputerName $env:COMPUTERNAME -ScopeId $ScopeNetworkID -ErrorAction SilentlyContinue
+
+    if (-not $existingScope) {
+        Write-Host "Створення DHCP області '$scopeName' з ID '$ScopeNetworkID'..."
+        $newScope = Add-DhcpServerv4Scope -ComputerName $env:COMPUTERNAME -Name $scopeName -StartRange $scopeStart -EndRange $scopeEnd -SubnetMask $scopeSubnet -State Active -LeaseDuration $scopeLeaseDuration -PassThru -ErrorAction Stop
+        Write-Host "DHCP область '$($newScope.Name)' створена."
+
+        Write-Host "Налаштування DHCP опцій для області '$($newScope.Name)'..."
+        Set-DhcpServerv4OptionValue -ComputerName $env:COMPUTERNAME -ScopeId $newScope.ScopeId -DnsServer $dnsServerForClients -Router $gateway -DnsDomain $domainName -ErrorAction Stop
+        Write-Host "DHCP опції налаштовано."
+    } else {
+        Write-Host "DHCP область '$($existingScope.Name)' з ID '$($existingScope.ScopeId)' вже існує. Оновлення опцій..."
+        Set-DhcpServerv4OptionValue -ComputerName $env:COMPUTERNAME -ScopeId $existingScope.ScopeId -DnsServer $dnsServerForClients -Router $gateway -DnsDomain $domainName -ErrorAction Stop
+        Set-DhcpServerv4Scope -ComputerName $env:COMPUTERNAME -ScopeId $existingScope.ScopeId -LeaseDuration $scopeLeaseDuration -State Active -ErrorAction Stop
+        Write-Host "DHCP опції для існуючої області оновлено."
+    }
+
+    # Налаштування динамічного оновлення DNS для DHCP-сервера
+    Write-Host "Налаштування динамічного оновлення DNS для DHCP..."
+    Set-DhcpServerv4DnsSetting -ComputerName $env:COMPUTERNAME -DynamicUpdates 'Always' -DeleteDnsRROnLeaseExpiry $True -PassThru -ErrorAction Stop
+    # Для безпечного оновлення в доменному середовищі може знадобитися:
+    # Set-DhcpServerv4DnsSetting -ComputerName $env:COMPUTERNAME -DnsUpdateCredentials ([System.Management.Automation.PSCredential]::Empty) # Якщо DHCP на контролері домену
+    # Або налаштувати спеціальний обліковий запис
+
+    Restart-Service DHCPServer -Force
+    Write-Host "Службу DHCP-сервера перезапущено."
+
+} catch {
+    Write-Error "Помилка під час налаштування DHCP: $($_.Exception.Message)"
+}
+
+# ==== DNS Конфігурація ====
+Write-Host "Налаштування DNS-сервера..."
+try {
+    # Перевірка, чи зона вже існує
+    $existingZone = Get-DnsServerZone -ComputerName $env:COMPUTERNAME -Name $domainName -ErrorAction SilentlyContinue
+    if (-not $existingZone) {
+        Write-Host "Створення основної DNS-зони '$domainName'..."
+        Add-DnsServerPrimaryZone -ComputerName $env:COMPUTERNAME -Name $domainName -ZoneFile "$domainName.dns" -DynamicUpdate Secure -PassThru -ErrorAction Stop
+        # Для не-доменного середовища або якщо безпечні оновлення не потрібні, можна використовувати: -DynamicUpdate NonsecureAndSecure
+        Write-Host "DNS-зона '$domainName' створена."
+    } else {
+        Write-Host "DNS-зона '$domainName' вже існує."
+        # Можна оновити налаштування існуючої зони, якщо потрібно
+        Set-DnsServerPrimaryZone -ComputerName $env:COMPUTERNAME -Name $domainName -DynamicUpdate Secure -ErrorAction Stop
+    }
+
+    # Додавання A-запису для WDS-сервера
+    $fullWdsDnsName = "$wdsServerDnsName.$domainName"
+    Write-Host "Додавання/оновлення A-запису '$wdsServerDnsName' ($ipAddress) в зону '$domainName'..."
+    Add-DnsServerResourceRecordA -ComputerName $env:COMPUTERNAME -Name $wdsServerDnsName -ZoneName $domainName -IPv4Address $ipAddress -TimeToLive ([TimeSpan]::FromHours(1)) -CreatePtr -AllowUpdateAny -PassThru -ErrorAction Stop
+    # -CreatePtr створить PTR-запис, якщо існує відповідна зворотна зона
+    # -AllowUpdateAny дозволяє будь-якому автентифікованому користувачеві оновлювати цей запис (розгляньте безпеку)
+    Write-Host "A-запис для WDS-сервера створено/оновлено."
+
+} catch {
+    Write-Error "Помилка під час налаштування DNS: $($_.Exception.Message)"
+}
+
+# ==== WDS Конфігурація ====
+Write-Host "Налаштування служб розгортання Windows (WDS)..."
+try {
+    # Перевірка, чи служба WDS встановлена і чи сервер вже ініціалізований
+    $wdsService = Get-Service -Name WDSServer -ErrorAction SilentlyContinue
+    if ($wdsService) {
+        # Спроба отримати статус ініціалізації WDS (немає прямого командлета, використовуємо wdsutil)
+        $wdsStatus = Invoke-Expression "wdsutil /get-server /show:config"
+        if ($wdsStatus -match "RemoteInstall path: $wdsPath") { # Проста перевірка, може бути неточною
+             Write-Host "WDS-сервер, схоже, вже ініціалізований з шляхом $wdsPath."
+        } else {
+            Write-Host "Ініціалізація WDS-сервера зі шляхом '$wdsPath' та інтеграцією з AD..."
+            # Переконуємося, що батьківська папка існує
+            if (-not (Test-Path (Split-Path $wdsPath))) { New-Item -ItemType Directory -Path (Split-Path $wdsPath) -Force | Out-Null }
+            wdsutil /Initialize-Server /RemInst:"$wdsPath" /Forest:Yes /Progress # /Forest:Yes для інтеграції з AD
+            Write-Host "WDS-сервер ініціалізовано."
+        }
+
+        Write-Host "Налаштування параметрів WDS-сервера..."
+        wdsutil /Set-Server /AnswerClients:All # Для тестування. Розгляньте 'Known' або 'ForAll /NewMachinePolicy:AdminApproval' для продакшену
+        wdsutil /Set-Server /UseDHCPPorts:No    # Оскільки DHCP на цьому ж сервері
+        wdsutil /Set-Server /DHCPOption60:Yes   # Налаштовує DHCP опцію 60
+        # wdsutil /Set-Server /Authorize:Yes # Авторизація WDS сервера в AD (якщо потрібно)
+        Write-Host "Параметри WDS-сервера налаштовано."
+
+        # ==== Додавання завантажувального образу ====
+        if (Test-Path $bootWimPath) {
+            Write-Host "Додавання завантажувального образу '$defaultBootImageName' з '$bootWimPath'..."
+            if (-not (Get-WdsBootImage -ImageName $defaultBootImageName -ImageGroup $defaultBootImageGroup -Architecture X64 -ErrorAction SilentlyContinue)) {
+                Import-WdsBootImage -Path $bootWimPath -ImageName $defaultBootImageName -ImageGroup $defaultBootImageGroup -Architecture X64 -TransmissionName "WinPE Setup x64" -SkipVerify -ErrorAction Stop
+                Write-Host "Завантажувальний образ '$defaultBootImageName' додано."
+            } else {
+                Write-Host "Завантажувальний образ '$defaultBootImageName' вже існує в групі '$defaultBootImageGroup'."
+            }
+        } else {
+            Write-Warning "Файл завантажувального образу '$bootWimPath' не знайдено. Пропуск імпорту."
+        }
+
+        # ==== Додавання інсталяційного образу ====
+        if (Test-Path $installWimPath) {
+            Write-Host "Додавання інсталяційного образу з '$installWimPath' до групи '$defaultInstallImageGroup'..."
+            # Перевірка, чи група образів існує, якщо ні - створюємо
+            if (-not (Get-WdsImageGroup -ImageGroup $defaultInstallImageGroup -ErrorAction SilentlyContinue)) {
+                New-WdsImageGroup -ImageGroup $defaultInstallImageGroup -ErrorAction Stop
+                Write-Host "Створено групу інсталяційних образів '$defaultInstallImageGroup'."
+            }
+            # Імпорт всіх образів з WIM-файлу. Можна вибрати конкретний образ за іменем або індексом.
+            Import-WdsInstallImage -Path $installWimPath -ImageGroup $defaultInstallImageGroup -SkipVerify -ErrorAction Stop
+            # Приклад імпорту конкретного образу:
+            # Import-WdsInstallImage -Path $installWimPath -ImageGroup $defaultInstallImageGroup -ImageName "Windows 10 Pro" -SkipVerify
+            Write-Host "Інсталяційні образи з '$installWimPath' додано до групи '$defaultInstallImageGroup'."
+        } else {
+            Write-Warning "Файл інсталяційного образу '$installWimPath' не знайдено. Пропуск імпорту."
+        }
+
+        # ==== Увімкнення та запуск служби WDS ====
+        Write-Host "Налаштування та запуск служби WDSServer..."
+        Set-Service -Name WDSServer -StartupType Automatic -ErrorAction Stop
+        Start-Service -Name WDSServer -ErrorAction Stop
+        Write-Host "Служба WDSServer налаштована на автоматичний запуск та запущена."
+
+    } else {
+         Write-Error "Службу WDS (WDSServer) не знайдено. Переконайтеся, що роль встановлена."
+    }
+} catch {
+    Write-Error "Помилка під час налаштування WDS: $($_.Exception.Message)"
+    if ($_.Exception.InnerException) {
+        Write-Error "Внутрішня помилка: $($_.Exception.InnerException.Message)"
+    }
+}
+
+Write-Host "==============================================="
+Write-Host "Налаштування завершено."
+Write-Host "Не забудьте налаштувати BIOS/UEFI клієнтських машин для завантаження по мережі (PXE boot)."
+Write-Host "Також може знадобитися додати драйвери до WDS для підтримки специфічного обладнання."
+Write-Host "Перевірте лог подій для можливих помилок або попереджень."
